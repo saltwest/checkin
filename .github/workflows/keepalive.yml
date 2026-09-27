@@ -2,16 +2,20 @@ name: Keep GitHub Actions Active
 
 on:
   schedule:
-    - cron: "0 1 1 * *"   # 每月1号 UTC 01:00 自动执行
-  workflow_dispatch:      # 可以手动执行一次
+    - cron: "0 1 1 * *" # 每月1日北京时间09:00
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
 jobs:
   keepalive:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,5 +30,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/keepalive.txt
-          git commit -m "chore: keep actions active" || exit 0
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: keep actions active"
+            git push
+          fi
+
+      - name: Notify keepalive result via PushPlus
+        if: ${{ always() }}
+        env:
+          NOTIFY: ${{ secrets.NOTIFY }}
+          KEEPALIVE_STATUS: ${{ job.status }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          options = [line.strip() for line in os.environ.get("NOTIFY", "").splitlines() if line.strip()]
+          tokens = [line.split(":", 1)[1].strip() for line in options if line.startswith("pushplus:")]
+          tokens += [line for line in options if ":" not in line]
+          tokens = list(dict.fromkeys(token for token in tokens if token))
+          if not tokens:
+              raise SystemExit("NOTIFY is missing a PushPlus token")
+          status = os.environ["KEEPALIVE_STATUS"]
+          result = "成功" if status == "success" else "失败或取消，请检查日志"
+          now = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+          url = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          content = f"保活结果：{result}\n北京时间：{now}\n触发方式：{os.environ['GITHUB_EVENT_NAME']}\n运行记录：{url}\n计划：每月1日北京时间09:00"
+          for token in tokens:
+              payload = {"token": token, "title": f"GitHub Actions 保活{result}", "content": content, "template": "txt"}
+              request = urllib.request.Request("https://www.pushplus.plus/send", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  data = json.load(response)
+              if data.get("code") != 200:
+                  raise SystemExit(f"PushPlus rejected notification, code={data.get('code')}")
+              print("PushPlus accepted keepalive notification")
+          PY
