@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
   push:
   schedule:
-    # UTC 16:00 = Beijing 00:00 the next day; GitHub scheduling may be delayed.
-    - cron: '0 16 * * *'
+    # UTC 13:00 = Beijing 21:00; GitHub scheduling may be delayed.
+    - cron: '0 13 * * *'
 
 jobs:
   run:
